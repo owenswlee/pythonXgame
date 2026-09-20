@@ -30,16 +30,24 @@ pygame.draw.ellipse(bg, (0, 0, 255), [400, 160, 60, 35 ], 5)
 # draw a line, (background, color, start, end, width)
 pygame.draw.line(bg, (255, 0, 255), (280, 220), (320, 220), 3)
 ######################循環偵測######################
+ispen = False
 while True:
     x, y = pygame.mouse.get_pos()  # get mouse position
     for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            sys.exit()
+        if event.type == pygame.QUIT:  # user clicked close button
+            sys.exit()  # exit the game
 
         if event.type == pygame.MOUSEBUTTONDOWN:
+
             print(f"Mouse button pressed at {x}, {y}")
+            pygame.draw.circle(bg, (0, 0, 0), (x, y), 30, 0)
+            ispen = not (ispen)  # toggle pen state
+            print(f"ispen: {ispen}")
+
+    if ispen:
+        pygame.draw.circle(bg, (0, 0, 0), (x, y), 30, 0)  # draw pen
 
     # draw the background starting from top-left corner
-    screen.blit(bg, (0, 0))
+    screen.blit(bg, (0, 0))  # draw canvas on window top-left corner
     # reload screen
-    pygame.display.update()
+    pygame.display.update()  # update window
