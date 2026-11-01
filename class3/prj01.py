@@ -61,8 +61,11 @@ class Ball:
         Check collisions and bounce \n
         bg_x, bg_y: Window width and height \n
         bricks: Brick list \n
-        pad: Paddle object
+        pad: Paddle object \n
+        return: Number of bricks hit this frame
         """
+        hits = 0  # Bricks hit this frame
+
         # Check window edges
         if self.x - self.radius <= 0 or self.x + self.radius >= bg_x:
             self.speed_x = -self.speed_x  # Horizontal bounce
@@ -94,6 +97,7 @@ class Ball:
                 # Check for a collision
                 if dx <= (self.radius + brick.rect.width / 2) and dy <= (self.radius + brick.rect.height / 2):
                     brick.hit = True  # Mark the brick as hit
+                    hits += 1
 
                     # Choose the bounce direction
                     # Use te side contact
@@ -102,7 +106,57 @@ class Ball:
                     else:
                         self.speed_y = -self.speed_y
 
+        return hits
+
 ######################定義函式區/ define functions######################
+
+def create_bricks():
+    """
+    Build a fresh list of bricks \n
+    return: Brick list
+    """
+    new_bricks = []
+    for col in range(bricks_col):
+        for row in range(bricks_row):
+            x = col * (brick_w + bricks_gap) + 70  # Start X = 70
+            y = row * (brick_h + bricks_gap) + 60  # Start Y = 60
+            color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
+            new_bricks.append(Brick(x, y, brick_w, brick_h, color))
+    return new_bricks
+
+def reset_ball():
+    """
+    Put the ball back on the paddle and reset its speed
+    """
+    ball.is_moving = False
+    ball.speed_x = 5
+    ball.speed_y = -5  # Launch upward
+    ball.x = pad.rect.x + pad.rect.width // 2
+    ball.y = pad.rect.y - ball_radius
+
+def draw_center_text(text, font, color, y):
+    """
+    Draw text centered horizontally \n
+    text: String to draw \n
+    font: Font object \n
+    color: Text color \n
+    y: Center Y coordinate
+    """
+    surface = font.render(text, True, color)
+    rect = surface.get_rect(center=(bg_x // 2, y))
+    screen.blit(surface, rect)
+
+def draw_end_screen(title, title_color):
+    """
+    Draw the game over / win page \n
+    title: Big title text \n
+    title_color: Title color
+    """
+    screen.fill((0, 0, 0))
+    draw_center_text(title, big_font, title_color, bg_y // 2 - 60)
+    draw_center_text(f"Score: {score}", font, (255, 255, 255), bg_y // 2 + 10)
+    draw_center_text(f"High Score: {high_score}", font, (255, 215, 0), bg_y // 2 + 50)
+    draw_center_text("Click to play again", small_font, (180, 180, 180), bg_y // 2 + 110)
 
 ######################初始化設定/ initialize settings######################
 
@@ -127,16 +181,13 @@ bricks_col = 11
 brick_w = 58
 brick_h = 16
 bricks_gap = 2
-bricks = []  # List of brick objects
-for col in range(bricks_col):
-    for row in range(bricks_row):
-            x = col * (brick_w + bricks_gap) + 70  # Start X = 70
-            y = row * (brick_h + bricks_gap) + 60  # Start Y = 60
-            color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
-            brick = Brick(x, y, brick_w, brick_h, color)
-            bricks.append(brick)
+bricks = create_bricks()  # List of brick objects
 
 ######################顯示文字設定/ text display settings######################
+
+font = pygame.font.Font(None, 40)
+big_font = pygame.font.Font(None, 90)
+small_font = pygame.font.Font(None, 30)
 
 ######################底板設定/ paddle settings######################
 
@@ -148,12 +199,39 @@ ball_radius = 10
 ball_color = (255, 215, 0)  # gold
 ball = Ball(pad.rect.x + pad.rect.width // 2, pad.rect.y - ball_radius, ball_radius, ball_color)
 
+reset_ball()
+
 ######################遊戲結束設定/ game over settings######################
+
+score = 0
+high_score = 0
+points_per_brick = 10
+game_state = "playing"  # "playing", "game_over" or "win"
 
 ######################主程式/ main program######################
 
 while True:
     FPS.tick(60) # set fps
+
+    # Game over / win page
+    if game_state != "playing":
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                sys.exit()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                # Click to restart
+                bricks = create_bricks()
+                score = 0
+                reset_ball()
+                game_state = "playing"
+
+        if game_state == "game_over":
+            draw_end_screen("GAME OVER", (255, 60, 60))
+        elif game_state == "win":
+            draw_end_screen("YOU WIN!", (60, 255, 60))
+        pygame.display.update()
+        continue
+
     screen.fill((0, 0, 0))  # Clear the screen
     mos_x, mos_y = pygame.mouse.get_pos()  # Get mouse position
     pad.rect.x = mos_x - pad.rect.width // 2  # Center the paddle on the mouse
@@ -171,7 +249,17 @@ while True:
     else:
         # Move and check collisions
         ball.move()
-        ball.check_collision(bg_x, bg_y, bricks, pad)
+        hits = ball.check_collision(bg_x, bg_y, bricks, pad)
+        score += hits * points_per_brick  # Add points for each brick hit
+        high_score = max(high_score, score)
+
+        # Ball fell below the window
+        if ball.y + ball.radius > bg_y:
+            game_state = "game_over"
+
+        # All bricks cleared
+        if all(brick.hit for brick in bricks):
+            game_state = "win"
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -186,5 +274,9 @@ while True:
 
     pad.draw(screen)
     ball.draw(screen)  # Draw the ball
+
+    # Draw the score
+    score_text = font.render(f"Score: {score}", True, (255, 255, 255))
+    screen.blit(score_text, (10, 10))
 
     pygame.display.update() 
