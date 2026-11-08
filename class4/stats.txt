@@ -1,0 +1,7 @@
+games 7
+bricks 453
+bosses 0
+powerups 55
+best_combo 31
+best_level 4
+play_time 49476

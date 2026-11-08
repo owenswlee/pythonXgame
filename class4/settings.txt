@@ -1,0 +1,5 @@
+volume 10
+muted 0
+difficulty normal
+shake 1
+fps 1

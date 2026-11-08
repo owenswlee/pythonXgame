@@ -23,7 +23,6 @@ bricks_gap = 2
 bricks_x0 = (bg_x - (bricks_col * (brick_w + bricks_gap) - bricks_gap)) // 2  # Center the grid
 bricks_y0 = hud_h + 30
 
-start_lives = 3
 max_lives = 5
 max_balls = 8
 shield_y = bg_y - 14  # Where the shield barrier sits
@@ -31,6 +30,20 @@ shield_y = bg_y - 14  # Where the shield barrier sits
 GAME_DIR = os.path.dirname(os.path.abspath(__file__))
 LEADERBOARD_FILE = os.path.join(GAME_DIR, "leaderboard.txt")
 OLD_HIGH_SCORE_FILE = os.path.join(GAME_DIR, "highscore.txt")
+SETTINGS_FILE = os.path.join(GAME_DIR, "settings.txt")
+STATS_FILE = os.path.join(GAME_DIR, "stats.txt")
+
+# Saved settings (numbers only, 0/1 for on/off)
+default_settings = {"volume": 8, "muted": 0, "difficulty": "normal", "shake": 1, "fps": 0}
+# Lifetime stats (play_time is in frames)
+default_stats = {"games": 0, "bricks": 0, "bosses": 0, "powerups": 0, "best_combo": 0, "best_level": 1, "play_time": 0}
+
+# Difficulty: name shown, starting lives, ball speed multiplier, description
+DIFFICULTIES = {
+    "easy": ("Easy", 5, 0.85, "5 lives, slower ball"),
+    "normal": ("Normal", 3, 1.0, "3 lives, normal speed"),
+    "hard": ("Hard", 2, 1.15, "2 lives, faster ball"),
+}
 
 brick_colors = [
     (255, 95, 109),
@@ -138,6 +151,10 @@ POWERUP_NAMES = {
 }
 EFFECT_DURATIONS = {"wide": 600, "slow": 480, "fire": 420, "laser": 480, "catch": 600, "shrink": 480}  # In frames (60 per second)
 powerup_drop_chance = 0.17
+
+# Keys that work on menu screens
+MENU_KEYS = (pygame.K_UP, pygame.K_w, pygame.K_DOWN, pygame.K_s, pygame.K_LEFT, pygame.K_a,
+             pygame.K_RIGHT, pygame.K_d, pygame.K_SPACE, pygame.K_RETURN)
 
 ######################繪圖工具/ graphics helpers######################
 
@@ -734,12 +751,152 @@ class FloatingText:
         display_area.blit(self.surface, self.surface.get_rect(center=(int(self.x), int(self.y))))
 
 
+######################介面元件/ GUI widgets######################
+
+class Button:
+    def __init__(self, text, center, size, action, color=(60, 95, 190), font=None):
+        """
+        A clickable button that lights up when hovered \n
+        text: / Label on the button \n
+        center: / Center position \n
+        size: / (width, height) \n
+        action: / Function to call when pressed \n
+        font: / Font to use (None = the normal font)
+        """
+        self.text = text
+        self.rect = pygame.Rect(0, 0, size[0], size[1])
+        self.rect.center = center
+        self.action = action
+        self.color = color
+        self.font = font
+        self.enabled = True
+        self.glow = 0.0  # Hover animation (0 = idle, 1 = fully lit)
+
+    def update(self, focused):
+        target = 1.0 if focused and self.enabled else 0.0
+        self.glow += (target - self.glow) * 0.25
+
+    def press(self, pos=None):
+        """
+        return: True if something happened
+        """
+        if not self.enabled:
+            return False
+        self.action()
+        return True
+
+    def adjust(self, step):
+        """Left/Right keys - plain buttons don't use them"""
+        return False
+
+    def draw_base(self, display_area):
+        """
+        Draw the glossy block \n
+        return: The (slightly grown) rect it was drawn in
+        """
+        level = round(self.glow * 4) / 4  # Rounded so the cache stays small
+        grow = int(level * 4) * 2
+        rect = self.rect.inflate(grow, grow // 2)
+        if self.enabled:
+            color = mix(self.color, lighten(self.color, 0.2), level)
+        else:
+            color = (42, 46, 66)
+        if level > 0:
+            add_wide_glow(display_area, rect, 16, darken(self.color, 0.6 * level))
+        display_area.blit(get_shadow(rect.width, rect.height, 12), rect.move(0, 4))
+        display_area.blit(get_block(rect.width, rect.height, color, 12), rect)
+        return rect
+
+    def draw(self, display_area, font, frame):
+        rect = self.draw_base(display_area)
+        text_color = (255, 255, 255) if self.enabled else (110, 115, 140)
+        draw_center_text(display_area, self.text, self.font or font, text_color, rect.centery, x=rect.centerx)
+
+
+class OptionRow(Button):
+    def __init__(self, label, center, size, get_value, change, slider_max=None):
+        """
+        A settings row: label on the left, value with < > arrows on the right \n
+        get_value: / Function returning the value (text, or a number for sliders) \n
+        change: / Function taking +1 or -1 \n
+        slider_max: / If set, the value is drawn as a bar out of this many steps
+        """
+        super().__init__(label, center, size, lambda: change(1), (40, 58, 120))
+        self.get_value = get_value
+        self.change = change
+        self.slider_max = slider_max
+
+    def press(self, pos=None):
+        # Clicking the left arrow goes down, anywhere else goes up
+        if pos and self.rect.right - 230 < pos[0] < self.rect.right - 115:
+            self.change(-1)
+        else:
+            self.change(1)
+        return True
+
+    def adjust(self, step):
+        self.change(step)
+        return True
+
+    def draw(self, display_area, font, frame):
+        rect = self.draw_base(display_area)
+        shadow = font.render(self.text, True, (5, 6, 15))
+        label = font.render(self.text, True, (255, 255, 255))
+        display_area.blit(shadow, shadow.get_rect(midleft=(rect.left + 26, rect.centery + 2)))
+        display_area.blit(label, label.get_rect(midleft=(rect.left + 24, rect.centery)))
+
+        arrow_color = (255, 215, 0) if self.glow > 0.5 else (140, 155, 200)
+        value_x = rect.right - 115
+        draw_center_text(display_area, "<", font, arrow_color, rect.centery, x=rect.right - 205)
+        draw_center_text(display_area, ">", font, arrow_color, rect.centery, x=rect.right - 25)
+
+        value = self.get_value()
+        if self.slider_max:
+            # A row of little bars, lit up to the current value
+            for i in range(self.slider_max):
+                bar = pygame.Rect(0, 0, 11, 8 + i * 1.4)
+                bar.midbottom = (value_x - 78 + i * 15 + 6, rect.centery + 10)
+                color = mix((100, 220, 150), (255, 210, 80), i / self.slider_max) if i < value else (30, 36, 62)
+                pygame.draw.rect(display_area, color, bar, border_radius=2)
+        else:
+            draw_center_text(display_area, str(value), font, (150, 220, 255), rect.centery, x=value_x)
+
+
+class LevelCard(Button):
+    def __init__(self, level, center, action):
+        """
+        A level select card with a tiny picture of the level \n
+        level: / Level number (1, 2, 3...)
+        """
+        super().__init__(f"LEVEL {level}", center, (170, 130), action, (45, 62, 125))
+        self.level = level
+
+    def draw(self, display_area, font, frame):
+        name, _, boss = level_info(self.level)
+        self.color = (120, 40, 70) if boss else (45, 62, 125)
+        rect = self.draw_base(display_area)
+        if not self.enabled:
+            draw_center_text(display_area, self.text, font, (110, 115, 140), rect.top + 24, x=rect.centerx)
+            draw_center_text(display_area, "?", font_cache(64), (80, 86, 115), rect.centery + 6, x=rect.centerx)
+            draw_center_text(display_area, "LOCKED", font_cache(20), (110, 115, 140), rect.bottom - 16, x=rect.centerx)
+            return
+
+        draw_center_text(display_area, self.text, font, (255, 255, 255), rect.top + 22, x=rect.centerx)
+        draw_center_text(display_area, name.replace("BOSS: ", ""), font_cache(20), (200, 210, 240), rect.top + 44, x=rect.centerx)
+        preview = get_level_preview(self.level)
+        display_area.blit(preview, preview.get_rect(center=(rect.centerx, rect.centery + 16)))
+        if boss:
+            tag_color = (255, 95, 109) if frame // 20 % 2 == 0 else (255, 160, 170)
+            draw_center_text(display_area, "BOSS", font_cache(20), tag_color, rect.bottom - 14, x=rect.centerx)
+
+
 class SoundBank:
     def __init__(self):
         """
         Generate all sound effects in code (no sound files needed)
         """
         self.muted = False
+        self.volume = 1.0
         self.sounds = {}
         try:
             if pygame.mixer.get_init() is None:
@@ -785,9 +942,11 @@ class SoundBank:
             0.25,
         )
         self.sounds["type"] = make_sound(0.03, lambda t, d: math.sin(2 * math.pi * 900 * t) * fade(t, d), 0.15)
+        self.sounds["click"] = make_sound(0.06, lambda t, d: sweep(t, d, 700, 1300) * fade(t, d), 0.2)
 
     def play(self, name):
         if not self.muted and name in self.sounds:
+            self.sounds[name].set_volume(self.volume)
             self.sounds[name].play()
 
 ######################定義函式區/ define functions######################
@@ -1050,6 +1209,115 @@ def draw_glow_text(display_area, text, font, color, y, x=None):
         display_area.blit(glow, glow.get_rect(center=(x, y)), special_flags=pygame.BLEND_ADD)
     draw_center_text(display_area, text, font, color, y, x)
 
+_font_cache = {}
+
+
+def font_cache(size):
+    """The default font at a size (made once, then reused)"""
+    if size not in _font_cache:
+        _font_cache[size] = pygame.font.Font(None, size)
+    return _font_cache[size]
+
+
+def draw_side_text(display_area, text, font, color, y, x, align="left"):
+    """
+    Draw text lined up on its left or right edge (with a soft shadow) \n
+    align: / "left" means x is the left edge, "right" means x is the right edge
+    """
+    shadow = font.render(text, True, (5, 6, 15))
+    surface = font.render(text, True, color)
+    rect = surface.get_rect(midleft=(x, y)) if align == "left" else surface.get_rect(midright=(x, y))
+    display_area.blit(shadow, rect.move(2, 2))
+    display_area.blit(surface, rect)
+
+
+def get_panel(w, h):
+    """
+    Dark glassy box that menus and results are drawn on
+    """
+    def build():
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        for y in range(h):
+            pygame.draw.line(surf, (*mix((24, 32, 68), (10, 13, 32), y / h), 230), (0, y), (w, y))
+        mask = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=18)
+        surf.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+        pygame.draw.rect(surf, (90, 150, 230, 170), surf.get_rect(), width=2, border_radius=18)
+        pygame.draw.line(surf, (255, 255, 255, 45), (18, 3), (w - 18, 3))
+        return surf
+    return cached(("panel", w, h), build)
+
+
+def draw_panel(display_area, rect):
+    add_wide_glow(display_area, rect, 18, (12, 26, 55))
+    display_area.blit(get_panel(rect.width, rect.height), rect)
+
+
+def get_level_preview(level):
+    """
+    A tiny picture of a level's brick layout (for level select)
+    """
+    def build():
+        _, layout, boss = level_info(level)
+        surf = pygame.Surface((bricks_col * 9, 7 * 5), pygame.SRCALPHA)
+        special = {"X": (255, 80, 40), "S": (60, 220, 100), "U": (105, 110, 128)}
+        for row, line in enumerate(layout):
+            for col, char in enumerate(line):
+                if char == ".":
+                    continue
+                if char in "23":
+                    color = tough_colors[int(char)]
+                else:
+                    color = special.get(char, brick_colors[row % len(brick_colors)])
+                pygame.draw.rect(surf, color, (col * 9, row * 5, 8, 4), border_radius=1)
+        if boss:
+            pygame.draw.rect(surf, (190, 115, 245), (28, 0, 43, 14), border_radius=4)
+            pygame.draw.rect(surf, (255, 95, 109), (40, 5, 6, 4))
+            pygame.draw.rect(surf, (255, 95, 109), (53, 5, 6, 4))
+        return surf
+    return cached(("preview", level), build)
+
+
+def load_dict(path, defaults):
+    """
+    Read "key value" lines into a copy of defaults (bad or unknown lines are skipped)
+    """
+    data = dict(defaults)
+    try:
+        with open(path) as file:
+            for line in file:
+                parts = line.split()
+                if len(parts) != 2 or parts[0] not in data:
+                    continue
+                key, value = parts
+                if isinstance(data[key], int):
+                    try:
+                        data[key] = int(value)
+                    except ValueError:
+                        pass
+                else:
+                    data[key] = value
+    except OSError:
+        pass
+    return data
+
+
+def save_dict(path, data):
+    try:
+        with open(path, "w") as file:
+            for key, value in data.items():
+                file.write(f"{key} {value}\n")
+    except OSError as error:
+        print(f"Could not save {os.path.basename(path)}: {error}")
+
+
+def format_time(frames):
+    seconds = frames // 60
+    hours, minutes = seconds // 3600, seconds // 60 % 60
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m {seconds % 60:02d}s"
+
 ######################遊戲類別/ game class######################
 
 class Game:
@@ -1092,6 +1360,14 @@ class Game:
         self.stars = [[random.uniform(0, bg_x), random.uniform(0, bg_y), random.uniform(0.15, 0.8),
                        random.randint(60, 160), random.uniform(0, 6.3)] for _ in range(80)]
 
+        self.settings = load_dict(SETTINGS_FILE, default_settings)
+        if self.settings["difficulty"] not in DIFFICULTIES:
+            self.settings["difficulty"] = "normal"
+        self.settings["volume"] = max(0, min(10, self.settings["volume"]))
+        self.sounds.volume = self.settings["volume"] / 10
+        self.sounds.muted = bool(self.settings["muted"])
+        self.stats = load_dict(STATS_FILE, default_stats)
+
         self.leaderboard = load_leaderboard()
         self.high_score = self.leaderboard[0][1] if self.leaderboard else 0
         self.paddle = Paddle()
@@ -1101,17 +1377,28 @@ class Game:
         self.sparks = []
         self.shockwaves = []
         self.texts = []
-        self.title_page = 0
-        self.title_timer = 0
-        self.new_game()
-        self.state = "title"  # title, playing, paused, level_clear, game_over
+        self.new_game(count=False)
+        # Menu screens: title, levels, help, scores, stats, settings
+        # Game screens: playing, paused, level_clear, game_over
+        self.state = "title"
+        self.last_state = "title"
+        self.focus = 0  # Which button is selected
+        self.settings_return = "title"  # Where the settings Back button goes
+        self.build_menus()
 
     ######## game flow ########
 
-    def new_game(self):
+    def new_game(self, start_level=1, count=True):
+        """
+        start_level: / Level to begin on (from level select) 
+
+        count: / Add it to the games played stat
+        """
+        if count:
+            self.stats["games"] += 1
         self.score = 0
-        self.lives = start_lives
-        self.level = 1
+        self.lives = DIFFICULTIES[self.settings["difficulty"]][1]
+        self.level = start_level
         self.start_high_score = self.high_score
         self.entering_name = False
         self.new_entry_rank = None
@@ -1120,6 +1407,9 @@ class Game:
 
     def load_level(self):
         self.bricks = build_level(self.level)
+        self.stats["best_level"] = max(self.stats["best_level"], self.level)
+        self.level_bricks = 0
+        self.level_best_combo = 0
         has_boss = level_info(self.level)[2]
         self.boss = Boss(self.level) if has_boss else None
         # Each level in the loop gets its own nebula background
@@ -1145,7 +1435,7 @@ class Game:
         self.combo = 0
 
     def level_speed(self):
-        return min(5 + 0.45 * (self.level - 1), 9.5)
+        return min(5 + 0.45 * (self.level - 1), 9.5) * DIFFICULTIES[self.settings["difficulty"]][2]
 
     def max_speed(self):
         return self.level_speed() + 3
@@ -1175,6 +1465,7 @@ class Game:
             on_board = len(self.leaderboard) < 5 or self.score > self.leaderboard[-1][1]
             self.entering_name = self.score > 0 and on_board
             self.player_name = ""
+            self.save_stats()
         else:
             self.reset_round()
             self.texts.append(FloatingText(bg_x // 2, bg_y // 2, "-1 LIFE", (255, 95, 109), self.mid_font))
@@ -1186,6 +1477,7 @@ class Game:
         self.score += self.bonus
         self.high_score = max(self.high_score, self.score)
         self.sounds.play("clear")
+        self.save_stats()
         self.screen_flash(80)
         for _ in range(60):
             self.sparks.append(Spark(random.uniform(100, bg_x - 100), random.uniform(100, 300), random.choice(brick_colors),
@@ -1204,9 +1496,13 @@ class Game:
         self.state_timer = 20
         self.sounds.play("powerup")
 
+    def save_stats(self):
+        save_dict(STATS_FILE, self.stats)
+
     def quit(self):
         if self.state == "game_over" and self.entering_name:
             self.submit_name()
+        self.save_stats()
         pygame.quit()
         sys.exit()
 
@@ -1214,33 +1510,40 @@ class Game:
 
     def handle_events(self):
         for event in pygame.event.get():
+            widgets = self.current_widgets()  # Can change after each click
             if event.type == pygame.QUIT:
                 self.quit()
             elif event.type == pygame.MOUSEMOTION:
                 self.control_x = event.pos[0]
+                for i, widget in enumerate(widgets):
+                    if widget.enabled and widget.rect.collidepoint(event.pos) and i != self.focus:
+                        self.focus = i
+                        self.sounds.play("type")
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                self.press_action()
+                if widgets:
+                    for i, widget in enumerate(widgets):
+                        if widget.rect.collidepoint(event.pos):
+                            self.focus = i
+                            if widget.press(event.pos):
+                                self.sounds.play("click")
+                            break
+                else:
+                    self.press_action()
             elif event.type == pygame.KEYDOWN:
                 if self.state == "game_over" and self.entering_name:
                     self.type_name(event)
+                elif event.key in (pygame.K_p, pygame.K_ESCAPE):
+                    self.back(event.key)
+                elif widgets and event.key in MENU_KEYS:
+                    self.menu_key(event.key, widgets)
                 elif event.key in (pygame.K_SPACE, pygame.K_RETURN):
                     self.press_action()
-                elif event.key in (pygame.K_p, pygame.K_ESCAPE):
-                    if self.state == "playing":
-                        self.state = "paused"
-                    elif self.state == "paused":
-                        self.state = "playing"
-                    elif self.state == "title" and event.key == pygame.K_ESCAPE:
-                        self.quit()
                 elif event.key == pygame.K_r and self.state == "paused":
                     self.new_game()
                 elif event.key == pygame.K_q and self.state == "paused":
-                    self.state = "title"
-                elif event.key == pygame.K_TAB and self.state == "title":
-                    self.title_page = 1 - self.title_page
-                    self.title_timer = 0
+                    self.to_title()
                 elif event.key == pygame.K_m:
-                    self.sounds.muted = not self.sounds.muted
+                    self.toggle_mute()
 
         keys = pygame.key.get_pressed()
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
@@ -1248,6 +1551,44 @@ class Game:
         if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
             self.control_x += 10
         self.control_x = max(0, min(bg_x, self.control_x))
+
+    def menu_key(self, key, widgets):
+        """Arrow keys move between buttons, Enter / Space presses one"""
+        if key in (pygame.K_UP, pygame.K_w):
+            self.move_focus(-1, widgets)
+        elif key in (pygame.K_DOWN, pygame.K_s):
+            self.move_focus(1, widgets)
+        elif key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
+            step = -1 if key in (pygame.K_LEFT, pygame.K_a) else 1
+            # Settings rows change their value, other screens just move along
+            if not widgets[self.focus].adjust(step):
+                self.move_focus(step, widgets)
+        elif widgets[self.focus].press():
+            self.sounds.play("click")
+
+    def move_focus(self, step, widgets):
+        for _ in range(len(widgets)):
+            self.focus = (self.focus + step) % len(widgets)
+            if widgets[self.focus].enabled:
+                break
+        self.sounds.play("type")
+
+    def back(self, key):
+        """P / Esc: pause, unpause, or go back one screen"""
+        if self.state == "playing":
+            self.state = "paused"
+        elif self.state == "paused":
+            self.state = "playing"
+        elif key != pygame.K_ESCAPE:
+            return
+        elif self.state == "title":
+            self.quit()
+        elif self.state == "settings":
+            self.close_settings()
+        elif self.state in ("levels", "help", "scores", "stats"):
+            self.go("title")
+        elif self.state == "game_over" and self.state_timer <= 0:
+            self.to_title()
 
     def type_name(self, event):
         """Typing your name for the leaderboard (3 letters)"""
@@ -1262,16 +1603,108 @@ class Game:
             self.sounds.play("type")
 
     def press_action(self):
-        """Click / Space does something different on each screen"""
-        if self.state == "title":
-            self.new_game()
-        elif self.state == "playing":
+        """Click / Space during the game (menus use their buttons instead)"""
+        if self.state == "playing":
             if self.intro_timer <= 0:
                 self.launch_balls()
-        elif self.state == "paused":
-            self.state = "playing"
-        elif self.state == "game_over" and not self.entering_name and self.state_timer <= 0:
-            self.new_game()
+        elif self.state == "level_clear" and self.state_timer < 110:
+            self.state_timer = 0  # Skip ahead to the next level
+
+    ######## menus ########
+
+    def go(self, state):
+        self.state = state
+        self.focus = 0
+
+    def to_title(self):
+        self.save_stats()
+        self.go("title")
+
+    def open_settings(self):
+        self.settings_return = self.state
+        self.go("settings")
+
+    def close_settings(self):
+        save_dict(SETTINGS_FILE, self.settings)
+        self.go(self.settings_return)
+
+    def open_levels(self):
+        unlocked = min(len(LEVELS), self.stats["best_level"])
+        for card in self.menus["levels"][:-1]:
+            card.enabled = card.level <= unlocked
+        self.go("levels")
+
+    def toggle_mute(self):
+        self.sounds.muted = not self.sounds.muted
+        self.settings["muted"] = int(self.sounds.muted)
+        save_dict(SETTINGS_FILE, self.settings)
+
+    def change_volume(self, step):
+        self.settings["volume"] = max(0, min(10, self.settings["volume"] + step))
+        self.sounds.volume = self.settings["volume"] / 10
+        self.sounds.play("bounce")  # So you can hear the new volume
+
+    def change_difficulty(self, step):
+        names = list(DIFFICULTIES)
+        index = (names.index(self.settings["difficulty"]) + step) % len(names)
+        self.settings["difficulty"] = names[index]
+
+    def toggle_setting(self, key):
+        self.settings[key] = 1 - self.settings[key]
+
+    def current_widgets(self):
+        if self.state == "game_over" and (self.entering_name or self.state_timer > 0):
+            return []
+        widgets = self.menus.get(self.state, [])
+        self.focus = min(self.focus, max(0, len(widgets) - 1))
+        return widgets
+
+    def build_menus(self):
+        """Make the buttons for every screen"""
+        on_off = lambda key: lambda: "On" if self.settings[key] else "Off"
+        back = lambda y: Button("Back", (bg_x // 2, y), (200, 46), lambda: self.go("title"), (70, 78, 110))
+
+        self.menus = {
+            "title": [
+                Button("PLAY", (bg_x // 2, 228), (320, 62), self.new_game, (40, 150, 95), self.mid_font),
+                Button("Level Select", (285, 312), (220, 46), self.open_levels),
+                Button("How to Play", (515, 312), (220, 46), lambda: self.go("help")),
+                Button("Leaderboard", (285, 368), (220, 46), lambda: self.go("scores")),
+                Button("Stats", (515, 368), (220, 46), lambda: self.go("stats")),
+                Button("Settings", (285, 424), (220, 46), self.open_settings),
+                Button("Quit", (515, 424), (220, 46), self.quit, (150, 50, 70)),
+            ],
+            "help": [back(560)],
+            "scores": [back(540)],
+            "stats": [back(530)],
+            "settings": [
+                OptionRow("Volume", (bg_x // 2, 165), (520, 48), lambda: self.settings["volume"], self.change_volume, 10),
+                OptionRow("Sound", (bg_x // 2, 223), (520, 48), lambda: "Off" if self.sounds.muted else "On",
+                          lambda step: self.toggle_mute()),
+                OptionRow("Difficulty", (bg_x // 2, 281), (520, 48),
+                          lambda: DIFFICULTIES[self.settings["difficulty"]][0], self.change_difficulty),
+                OptionRow("Screen Shake", (bg_x // 2, 339), (520, 48), on_off("shake"), lambda step: self.toggle_setting("shake")),
+                OptionRow("Show FPS", (bg_x // 2, 397), (520, 48), on_off("fps"), lambda step: self.toggle_setting("fps")),
+                Button("Back", (bg_x // 2, 530), (200, 46), self.close_settings, (70, 78, 110)),
+            ],
+            "paused": [
+                Button("Resume", (bg_x // 2, 262), (260, 48), lambda: self.go("playing"), (40, 150, 95)),
+                Button("Restart", (bg_x // 2, 320), (260, 48), self.new_game),
+                Button("Settings", (bg_x // 2, 378), (260, 48), self.open_settings),
+                Button("Main Menu", (bg_x // 2, 436), (260, 48), self.to_title, (150, 50, 70)),
+            ],
+            "game_over": [
+                Button("Play Again", (300, 545), (190, 46), self.new_game, (40, 150, 95)),
+                Button("Main Menu", (500, 545), (190, 46), self.to_title),
+            ],
+        }
+
+        # Level select: 4 x 2 grid of cards (the first time through the levels)
+        cards = []
+        for i in range(len(LEVELS)):
+            center = (118 + i % 4 * 188, 240 + i // 4 * 150)
+            cards.append(LevelCard(i + 1, center, lambda n=i + 1: self.new_game(n)))
+        self.menus["levels"] = cards + [back(540)]
 
     def launch_balls(self):
         for ball in self.balls:
@@ -1296,6 +1729,7 @@ class Game:
     def update(self):
         self.paddle.update(self.control_x)
         self.level_frame += 1
+        self.stats["play_time"] += 1
         if self.banner_timer > 0:
             self.banner_timer -= 1
         if self.intro_timer > 0:
@@ -1527,6 +1961,7 @@ class Game:
         self.screen_flash(200)
         self.sounds.play("explode")
         self.bombs = []
+        self.stats["bosses"] += 1
         points = 250 * self.level
         self.score += points
         self.high_score = max(self.high_score, self.score)
@@ -1539,6 +1974,10 @@ class Game:
         """
         brick.hit = True
         self.combo += 1
+        self.level_bricks += 1
+        self.level_best_combo = max(self.level_best_combo, self.combo)
+        self.stats["bricks"] += 1
+        self.stats["best_combo"] = max(self.stats["best_combo"], self.combo)
         multiplier = 1 + min(self.combo // 4, 4)
         self.add_score(brick_points.get(brick.brick_type, 10) * multiplier, brick.rect.center)
         self.sounds.play(f"brick{min(self.combo - 1, 7)}")
@@ -1603,6 +2042,7 @@ class Game:
         self.texts.append(FloatingText(self.paddle.rect.centerx, self.paddle.rect.top - 30, POWERUP_NAMES[kind], color, self.font))
         self.burst(self.paddle.rect.center, color, 15, 3)
         self.sounds.play("bad" if kind == "shrink" else "powerup")
+        self.stats["powerups"] += 1
 
         if kind in EFFECT_DURATIONS:
             self.effects[kind] = EFFECT_DURATIONS[kind]
@@ -1642,7 +2082,8 @@ class Game:
 
     def draw(self):
         canvas = self.canvas
-        canvas.blit(self.backgrounds["title"] if self.state == "title" else self.background, (0, 0))
+        menu_screen = self.on_menu_screen()
+        canvas.blit(self.backgrounds["title"] if menu_screen else self.background, (0, 0))
         for x, y, speed, shade, phase in self.stars:
             twinkle = round((0.65 + 0.35 * math.sin(self.frame * 0.05 + phase)) * 8) / 8  # Rounded so the cache stays small
             color = darken((shade, shade + 10, min(255, shade + 50)), twinkle)
@@ -1653,7 +2094,7 @@ class Game:
             else:
                 canvas.set_at((int(x), int(y)), color)
 
-        if self.state != "title":
+        if not menu_screen:
             for brick in self.bricks:
                 brick.draw(canvas, self.frame)
             if self.boss:
@@ -1681,8 +2122,9 @@ class Game:
         # Screen shake
         offset = (0, 0)
         if self.shake > 0:
-            power = self.shake // 2 + 1
-            offset = (random.randint(-power, power), random.randint(-power, power))
+            if self.settings["shake"]:
+                power = self.shake // 2 + 1
+                offset = (random.randint(-power, power), random.randint(-power, power))
             self.shake -= 1
         self.screen.fill((0, 0, 0))
         self.screen.blit(canvas, offset)
@@ -1692,24 +2134,38 @@ class Game:
             overlay.set_alpha(self.flash_amount)
             self.screen.blit(overlay, (0, 0))
 
-        if self.state == "title":
-            self.draw_title()
+        if menu_screen:
+            screens = {"title": self.draw_title, "levels": self.draw_level_select, "help": self.draw_help,
+                       "scores": self.draw_scores, "stats": self.draw_stats, "settings": self.draw_settings}
+            screens[self.state]()
         else:
             self.draw_hud()
             if self.state == "playing":
                 self.draw_hints()
             elif self.state == "paused":
+                self.draw_pause()
+            elif self.state == "settings":
                 self.screen.blit(self.dim, (0, 0))
-                draw_glow_text(self.screen, "PAUSED", self.big_font, (150, 200, 255), bg_y // 2 - 60)
-                draw_center_text(self.screen, "Click, Space or P to continue", self.font, (180, 190, 220), bg_y // 2 + 10)
-                draw_center_text(self.screen, "R: restart      Q: quit to title      M: mute", self.font, (150, 165, 200), bg_y // 2 + 50)
+                self.draw_settings()
             elif self.state == "level_clear":
-                draw_glow_text(self.screen, f"LEVEL {self.level} CLEAR!", self.big_font, (100, 230, 150), bg_y // 2 - 30)
-                draw_glow_text(self.screen, f"Bonus +{self.bonus}", self.mid_font, (255, 215, 0), bg_y // 2 + 40)
+                self.draw_level_clear()
             elif self.state == "game_over":
                 self.draw_game_over()
 
+        for widget in self.current_widgets():
+            widget.draw(self.screen, self.font, self.frame)
+
+        if self.settings["fps"]:
+            fps = self.tiny_font.render(f"FPS {self.clock.get_fps():.0f}", True, (150, 220, 150))
+            self.screen.blit(fps, (8, bg_y - 20))
+
         pygame.display.flip()
+
+    def on_menu_screen(self):
+        """Menu screens use the title background and hide the game"""
+        if self.state == "settings":
+            return self.settings_return == "title"
+        return self.state in ("title", "levels", "help", "scores", "stats")
 
     def draw_hud(self):
         self.screen.blit(self.hud_panel, (0, 0))
@@ -1793,17 +2249,93 @@ class Game:
             self.screen.blit(letter, (x, y))
             x += letter.get_width()
 
-        alpha = 150 + int(100 * math.sin(self.frame * 0.08))
-        start = self.mid_font.render("Click or press SPACE to start", True, (255, 255, 255))
-        start.set_alpha(alpha)
-        self.screen.blit(start, start.get_rect(center=(bg_x // 2, 205)))
+        difficulty = DIFFICULTIES[self.settings["difficulty"]][0]
+        draw_center_text(self.screen, f"Best: {self.high_score}      Difficulty: {difficulty}",
+                         self.small_font, (170, 185, 225), 490)
+        draw_center_text(self.screen, "Mouse, or arrow keys + Enter      Esc: quit", self.tiny_font, (110, 125, 160), bg_y - 18)
 
-        if self.title_page == 0:
-            self.draw_how_to_play()
-        else:
-            self.draw_leaderboard(270)
+    def draw_header(self, text, color=(150, 200, 255)):
+        draw_glow_text(self.screen, text, self.mid_font, color, 70)
 
-        draw_center_text(self.screen, "TAB: switch page", self.tiny_font, (110, 125, 160), bg_y - 18)
+    def draw_help(self):
+        self.draw_header("HOW TO PLAY")
+        draw_center_text(self.screen, "BRICKS", self.small_font, (255, 215, 0), 232)
+        draw_center_text(self.screen, "POWER-UPS", self.small_font, (255, 215, 0), 318)
+        self.draw_how_to_play()
+
+    def draw_scores(self):
+        self.draw_header("LEADERBOARD", (255, 215, 0))
+        self.draw_leaderboard(150)
+
+    def draw_level_select(self):
+        self.draw_header("LEVEL SELECT")
+        draw_center_text(self.screen, "Reach a level to unlock it here", self.small_font, (170, 185, 225), 122)
+
+    def draw_stats(self):
+        self.draw_header("STATS")
+        panel = pygame.Rect(180, 120, 440, 340)
+        draw_panel(self.screen, panel)
+        rows = [
+            ("Games played", str(self.stats["games"])),
+            ("Bricks broken", str(self.stats["bricks"])),
+            ("Bosses defeated", str(self.stats["bosses"])),
+            ("Power-ups caught", str(self.stats["powerups"])),
+            ("Best combo", str(self.stats["best_combo"])),
+            ("Furthest level", str(self.stats["best_level"])),
+            ("Time played", format_time(self.stats["play_time"])),
+        ]
+        for i, (label, value) in enumerate(rows):
+            y = panel.top + 40 + i * 44
+            if i:
+                pygame.draw.line(self.screen, (40, 52, 95), (panel.left + 30, y - 22), (panel.right - 30, y - 22))
+            draw_side_text(self.screen, label, self.font, (190, 200, 235), y, panel.left + 34)
+            draw_side_text(self.screen, value, self.font, (255, 215, 0), y, panel.right - 34, "right")
+
+    def draw_settings(self):
+        self.draw_header("SETTINGS")
+        _, lives, _, about = DIFFICULTIES[self.settings["difficulty"]]
+        draw_center_text(self.screen, f"Difficulty: {about}", self.small_font, (170, 185, 225), 448)
+        if self.settings_return == "paused":
+            draw_center_text(self.screen, "Starting lives change on your next game", self.tiny_font, (130, 145, 185), 474)
+        draw_center_text(self.screen, "Up/Down: choose      Left/Right: change      Esc: back",
+                         self.tiny_font, (110, 125, 160), bg_y - 18)
+
+    def draw_pause(self):
+        self.screen.blit(self.dim, (0, 0))
+        panel = pygame.Rect(0, 0, 340, 380)
+        panel.center = (bg_x // 2, 320)
+        draw_panel(self.screen, panel)
+        draw_glow_text(self.screen, "PAUSED", self.mid_font, (150, 200, 255), panel.top + 48)
+        draw_center_text(self.screen, f"Level {self.level}  -  Score {self.score}", self.small_font, (170, 185, 225),
+                         panel.top + 88)
+        draw_center_text(self.screen, "P / Esc: resume   R: restart   M: mute", self.tiny_font, (130, 145, 185),
+                         panel.bottom - 22)
+
+    def draw_level_clear(self):
+        panel = pygame.Rect(0, 0, 460, 340)
+        panel.center = (bg_x // 2, bg_y // 2 + 10)
+        draw_panel(self.screen, panel)
+        draw_glow_text(self.screen, f"LEVEL {self.level} CLEAR!", self.mid_font, (100, 230, 150), panel.top + 46)
+
+        rows = [
+            ("Bricks broken", str(self.level_bricks)),
+            ("Best combo", str(self.level_best_combo)),
+            ("Time", format_time(self.level_frame)),
+            ("Lives left", str(self.lives)),
+        ]
+        # Rows slide in one after another
+        shown = (150 - self.state_timer) // 8
+        for i, (label, value) in enumerate(rows[:shown]):
+            y = panel.top + 100 + i * 36
+            draw_side_text(self.screen, label, self.font, (190, 200, 235), y, panel.left + 40)
+            draw_side_text(self.screen, value, self.font, (255, 255, 255), y, panel.right - 40, "right")
+        if shown > len(rows):
+            draw_glow_text(self.screen, f"Bonus +{self.bonus}", self.mid_font, (255, 215, 0), panel.top + 262)
+
+        next_name = level_info(self.level + 1)[0]
+        draw_center_text(self.screen, f"Next: {next_name}", self.small_font, (150, 200, 255), panel.bottom - 30)
+        if self.state_timer < 110 and self.frame // 20 % 2 == 0:
+            draw_center_text(self.screen, "Click to continue", self.tiny_font, (170, 185, 225), panel.bottom + 22)
 
     def draw_how_to_play(self):
         # Brick legend
@@ -1832,7 +2364,7 @@ class Game:
 
         controls = [
             "Mouse or Left/Right keys: move paddle      Click or Space: launch ball",
-            "P / Esc: pause      M: mute",
+            "P / Esc: pause menu      M: mute      Change sound and difficulty in Settings",
             "Break bricks without touching the paddle for a COMBO bonus!",
             "Every 4th level has a BOSS - dodge its bombs!",
         ]
@@ -1861,8 +2393,6 @@ class Game:
             draw_center_text(self.screen, "Press Enter to save", self.small_font, (150, 165, 200), 480)
         else:
             self.draw_leaderboard(290, self.new_entry_rank)
-            if self.state_timer <= 0:
-                draw_center_text(self.screen, "Click to play again", self.font, (180, 180, 180), 545)
 
     ######## main loop ########
 
@@ -1870,6 +2400,9 @@ class Game:
         """Run one frame of the game"""
         self.frame += 1
         self.handle_events()
+        if self.state != self.last_state:
+            self.last_state = self.state
+            self.focus = 0
         if self.state == "playing":
             self.update()
         elif self.state == "level_clear":
@@ -1880,13 +2413,10 @@ class Game:
                 self.state = "playing"
         elif self.state == "game_over" and self.state_timer > 0:
             self.state_timer -= 1
-        elif self.state == "title":
-            self.title_timer += 1
-            if self.title_timer >= 420:  # Switch title pages every 7 seconds
-                self.title_page = 1 - self.title_page
-                self.title_timer = 0
-        if self.state != "paused":
+        if self.state != "paused" and not (self.state == "settings" and self.settings_return == "paused"):
             self.update_effects()
+        for i, widget in enumerate(self.current_widgets()):
+            widget.update(i == self.focus)
         pygame.mouse.set_visible(self.state != "playing")
         self.draw()
 
