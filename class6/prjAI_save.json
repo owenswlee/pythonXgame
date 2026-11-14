@@ -1,0 +1,42 @@
+{
+ "coins": 192,
+ "high_score": 896,
+ "owned": [
+  "hopper",
+  "kitty"
+ ],
+ "character": "kitty",
+ "upgrades": {},
+ "rp": 0,
+ "stats": {
+  "games_ranked": 2,
+  "losses_ranked": 2,
+  "games_solo": 8,
+  "best_height": 596,
+  "games_2v2": 2,
+  "losses_2v2": 1,
+  "wins_2v2": 1
+ },
+ "daily": {
+  "date": "2026-11-14",
+  "streak": 1,
+  "quests": [
+   {
+    "id": "height",
+    "p": 596,
+    "done": false
+   },
+   {
+    "id": "stomp",
+    "p": 3,
+    "done": false
+   },
+   {
+    "id": "coins",
+    "p": 40,
+    "done": true
+   }
+  ]
+ },
+ "music": true
+}
